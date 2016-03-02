@@ -278,14 +278,18 @@ class Mock(object):
         else:
             return Mock
 
-MOCK_MODULES = ['AppKit', 'Quartz', 'CoreText', 'QTKit',
+MOCK_MODULES = ['py2app',
+        'AppKit', 'Quartz', 'CoreText', 'QTKit',
         'xmlWriter',
         'fontTools',
         'fontTools.misc',
         'fontTools.misc.transform',
+        'fontTools.pens',
+        'fontTools.pens.basePen',
         'vanilla']
 for mod_name in MOCK_MODULES:
     sys.modules[mod_name] = Mock()
+
 
 # sphinx hacking
 
