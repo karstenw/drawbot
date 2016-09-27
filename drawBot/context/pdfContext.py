@@ -5,8 +5,10 @@ import Quartz
 
 import math
 
+from tools import gifTools
+
 from baseContext import BaseContext, FormattedString
-from drawBot.misc import DrawBotError, isPDF
+from drawBot.misc import DrawBotError, isPDF, isGIF
 
 
 def sendPDFtoPrinter(pdfDocument):
@@ -213,6 +215,8 @@ class PDFContext(BaseContext):
         if isinstance(key, AppKit.NSImage):
             image = key
             key = id(key)
+        if pageNumber is not None:
+            key = "%s-%s" % (key, pageNumber)
         if key not in self._cachedImages:
             if image is None:
                 if path.startswith("http"):
@@ -220,6 +224,7 @@ class PDFContext(BaseContext):
                 else:
                     url = AppKit.NSURL.fileURLWithPath_(path)
                 _isPDF, _ = isPDF(url)
+                _isGIF, _ = isGIF(url)
                 if _isPDF:
                     pdf = Quartz.CGPDFDocumentCreateWithURL(url)
                     if pdf is not None:
@@ -228,6 +233,16 @@ class PDFContext(BaseContext):
                         self._cachedImages[key] = _isPDF, Quartz.CGPDFDocumentGetPage(pdf, pageNumber)
                     else:
                         raise DrawBotError("No pdf found at %s" % key)
+                elif _isGIF:
+                    if pageNumber is None:
+                        pageNumber = gifTools.gifFrameCount(url)
+                    image = gifTools.gifFrameAtIndex(url, pageNumber-1)
+                    data = image.TIFFRepresentation()
+                    source = Quartz.CGImageSourceCreateWithData(data, {})
+                    if source is not None:
+                        self._cachedImages[key] = False, Quartz.CGImageSourceCreateImageAtIndex(source, 0, None)
+                    else:
+                        raise DrawBotError("No image found at frame %s in %s" % (pageNumber, key))
                 else:
                     image = AppKit.NSImage.alloc().initByReferencingURL_(url)
             if image and not _isPDF:
@@ -382,3 +397,15 @@ class PDFContext(BaseContext):
                                               d.greenComponent(),
                                               d.blueComponent(),
                                               d.alphaComponent())
+
+    def _linkDestination(self, name, (x, y)):
+        if (x, y) == (None, None):
+            x, y = self.width * 0.5, self.height * 0.5
+        x = max(0, min(x, self.width))
+        y = max(0, min(y, self.height))
+        centerPoint = Quartz.CGPoint(x, y)
+        Quartz.CGPDFContextAddDestinationAtPoint(self._pdfContext, name, centerPoint)
+
+    def _linkRect(self, name, (x, y, w, h)):
+        rectBox = Quartz.CGRectMake(x, y, w, h)
+        Quartz.CGPDFContextSetDestinationForRect(self._pdfContext, name, rectBox)

@@ -2,6 +2,8 @@ import AppKit
 import CoreText
 import Quartz
 
+import math
+
 from fontTools.pens.basePen import BasePen
 
 from drawBot.misc import DrawBotError, cmyk2rgb, warnings
@@ -259,6 +261,68 @@ class BezierPath(BasePen):
         new._path = self._path.copy()
         return new
 
+    def reverse(self):
+        """
+        Reverse the path direction
+        """
+        self._path = self._path.bezierPathByReversingPath()
+
+    def appendPath(self, otherPath):
+        """
+        Append a path.
+        """
+        self._path.appendBezierPath_(otherPath.getNSBezierPath())
+
+    def __add__(self, otherPath):
+        new = self.copy()
+        new.appendPath(otherPath)
+        return new
+
+    # transformations
+
+    def translate(self, x=0, y=0):
+        """
+        Translate the path with a given offset.
+        """
+        self.transform((1, 0, 0, 1, x, y))
+
+    def rotate(self, angle):
+        """
+        Rotate the path around the origin point with a given angle in degrees.
+        """
+        angle = math.radians(angle)
+        c = math.cos(angle)
+        s = math.sin(angle)
+        self.transform((c, s, -s, c, 0, 0))
+
+    def scale(self,  x=1, y=None):
+        """
+        Scale the path with a given `x` (horizontal scale) and `y` (vertical scale).
+
+        If only 1 argument is provided a proportional scale is applied.
+        """
+        if y is None:
+            y = x
+        self.transform((x, 0, 0, y, 0, 0))
+
+    def skew(self, angle1, angle2=0):
+        """
+        Skew the path with given `angle1` and `angle2`.
+
+        If only one argument is provided a proportional skew is applied.
+        """
+        angle1 = math.radians(angle1)
+        angle2 = math.radians(angle2)
+        self.transform((1, math.tan(angle2), math.tan(angle1), 1, 0, 0))
+
+    def transform(self, transformMatrix):
+        """
+        Transform a path with a transform matrix (xy, xx, yy, yx, x, y).
+        """
+        aT = AppKit.NSAffineTransform.transform()
+        aT.setTransformStruct_(transformMatrix[:])
+        self._path.transformUsingAffineTransform_(aT)
+
     def _points(self, onCurve=True, offCurve=True):
         points = []
         if not onCurve and not offCurve:
@@ -449,12 +513,18 @@ class FormattedString(object):
         justified=AppKit.NSJustifiedTextAlignment,
         )
 
+    _textTabAlignMap = dict(
+        center=AppKit.NSCenterTextAlignment,
+        left=AppKit.NSLeftTextAlignment,
+        right=AppKit.NSRightTextAlignment,
+        )
+
     def __init__(self, txt=None,
-                        font=None, fontSize=10, fallbackFont=None,
+                        font=_FALLBACKFONT, fontSize=10, fallbackFont=None,
                         fill=(0, 0, 0), cmykFill=None,
                         stroke=None, cmykStroke=None, strokeWidth=1,
                         align=None, lineHeight=None, tracking=None, baselineShift=None,
-                        openTypeFeatures=None):
+                        openTypeFeatures=None, tabs=None):
         self._attributedString = AppKit.NSMutableAttributedString.alloc().init()
         self._font = font
         self._fontSize = fontSize
@@ -471,19 +541,20 @@ class FormattedString(object):
         if openTypeFeatures is None:
             openTypeFeatures = dict()
         self._openTypeFeatures = openTypeFeatures
+        self._tabs = tabs
         if txt:
             self.append(txt, font=font, fontSize=fontSize, fallbackFont=fallbackFont,
                         fill=fill, cmykFill=cmykFill,
                         stroke=stroke, cmykStroke=cmykStroke, strokeWidth=strokeWidth,
-                        align=align, lineHeight=lineHeight,
-                        openTypeFeatures=openTypeFeatures)
+                        align=align, lineHeight=lineHeight, tracking=tracking, baselineShift=baselineShift,
+                        openTypeFeatures=openTypeFeatures, tabs=tabs)
 
     def append(self, txt,
                     font=None, fallbackFont=None, fontSize=None,
                     fill=None, cmykFill=None,
                     stroke=None, cmykStroke=None, strokeWidth=None,
                     align=None, lineHeight=None, tracking=None, baselineShift=None,
-                    openTypeFeatures=None):
+                    openTypeFeatures=None, tabs=None):
         """
         Add `txt` to the formatted string with some additional text formatting attributes:
 
@@ -575,6 +646,11 @@ class FormattedString(object):
         else:
             self._openTypeFeatures = openTypeFeatures
 
+        if tabs is None:
+            tabs = self._tabs
+        else:
+            self._tabs = tabs
+
         if isinstance(txt, FormattedString):
             self._attributedString.appendAttributedString_(txt.getNSObject())
             return
@@ -613,6 +689,10 @@ class FormattedString(object):
             elif cmykFill:
                 fillColor = self._cmykColorClass.getColor(cmykFill).getNSObject()
             attributes[AppKit.NSForegroundColorAttributeName] = fillColor
+        else:
+            # seems like the default foreground color is black
+            # set clear color when the fill is None
+            attributes[AppKit.NSForegroundColorAttributeName] = AppKit.NSColor.clearColor()
         if stroke or cmykStroke:
             if stroke:
                 strokeColor = self._colorClass.getColor(stroke).getNSObject()
@@ -623,6 +703,19 @@ class FormattedString(object):
         para = AppKit.NSMutableParagraphStyle.alloc().init()
         if align:
             para.setAlignment_(self._textAlignMap[align])
+        if tabs:
+            for tabStop in para.tabStops():
+                para.removeTabStop_(tabStop)
+            for tab, tabAlign in tabs:
+                tabOptions = None
+                if tabAlign in self._textTabAlignMap:
+                    tabAlign = self._textTabAlignMap[tabAlign]
+                else:
+                    tabCharSet = AppKit.NSCharacterSet.characterSetWithCharactersInString_(tabAlign)
+                    tabOptions = {AppKit.NSTabColumnTerminatorsAttributeName: tabCharSet}
+                    tabAlign = self._textAlignMap["right"]
+                tabStop = AppKit.NSTextTab.alloc().initWithTextAlignment_location_options_(tabAlign, tab, tabOptions)
+                para.addTabStop_(tabStop)
         if lineHeight:
             # para.setLineSpacing_(lineHeight)
             para.setMaximumLineHeight_(lineHeight)
@@ -642,7 +735,7 @@ class FormattedString(object):
                     fill=self._fill, cmykFill=self._cmykFill,
                     stroke=self._stroke, cmykStroke=self._cmykStroke, strokeWidth=self._strokeWidth,
                     align=self._align, lineHeight=self._lineHeight, tracking=self._tracking,
-                    baselineShift=self._baselineShift, openTypeFeatures=self._openTypeFeatures)
+                    baselineShift=self._baselineShift, openTypeFeatures=self._openTypeFeatures, tabs=self._tabs)
         return new
 
     def __getitem__(self, index):
@@ -724,6 +817,8 @@ class FormattedString(object):
         Sets the fill color with a `red`, `green`, `blue` and `alpha` value.
         Each argument must a value float between 0 and 1.
         """
+        if fill and fill[0] is None:
+            fill = None
         self._fill = fill
         self._cmykFill = None
 
@@ -732,6 +827,8 @@ class FormattedString(object):
         Sets the stroke color with a `red`, `green`, `blue` and `alpha` value.
         Each argument must a value float between 0 and 1.
         """
+        if stroke and stroke[0] is None:
+            stroke = None
         self._stroke = stroke
         self._cmykStroke = None
 
@@ -741,6 +838,8 @@ class FormattedString(object):
 
         Sets the CMYK fill color. Each value must be a float between 0.0 and 1.0.
         """
+        if cmykFill and cmykFill[0] is None:
+            cmykFill = None
         self._cmykFill = cmykFill
         self._fill = None
 
@@ -750,6 +849,8 @@ class FormattedString(object):
 
         Sets the CMYK stroke color. Each value must be a float between 0.0 and 1.0.
         """
+        if cmykStroke and cmykStroke[0] is None:
+            cmykStroke = None
         self._cmykStroke = cmykStroke
         self._stroke = None
 
@@ -805,6 +906,17 @@ class FormattedString(object):
             fontName = self._font
         return openType.getFeatureTagsForFontName(fontName)
 
+    def tabs(self, *tabs):
+        """
+        Set tabs,tuples of (`float`, `alignment`)
+        Aligment can be `"left"`, `"center"`, `"right"` or any other character.
+        If a character is provided the alignment will be `right` and centered on the specified character.
+        """
+        if tabs and tabs[0] is None:
+            self._tabs = None
+        else:
+            self._tabs = tabs
+
     def size(self):
         """
         Return the size of the text.
@@ -818,7 +930,13 @@ class FormattedString(object):
         """
         Copy the formatted string.
         """
-        new = self.__class__()
+        new = self.__class__(
+            font=self._font, fontSize=self._fontSize, fallbackFont=self._fallbackFont,
+            fill=self._fill, cmykFill=self._cmykFill,
+            stroke=self._stroke, cmykStroke=self._cmykStroke, strokeWidth=self._strokeWidth,
+            align=self._align, lineHeight=self._lineHeight, tracking=self._tracking, baselineShift=self._baselineShift,
+            openTypeFeatures=self._openTypeFeatures
+            )
         new._attributedString = self._attributedString.mutableCopy()
         return new
 
@@ -939,6 +1057,7 @@ class Text(object):
         self._tracking = None
         self._baselineShift = None
         self._hyphenation = None
+        self._tabs = []
         self.openTypeFeatures = dict()
 
     def _get_font(self):
@@ -1027,6 +1146,14 @@ class Text(object):
 
     hyphenation = property(_get_hyphenation, _set_hyphenation)
 
+    def _get_tabs(self):
+        return self._tabs
+
+    def _set_tabs(self, value):
+        self._tabs = value
+
+    tabs = property(_get_tabs, _set_tabs)
+
     def copy(self):
         new = self.__class__()
         new.fontName = self.fontName
@@ -1037,6 +1164,7 @@ class Text(object):
         new.baseline = self.baselineShift
         new.hyphenation = self.hyphenation
         new.openTypeFeatures = dict(self.openTypeFeatures)
+        new.tabs = list(self.tabs)
         return new
 
 
@@ -1137,6 +1265,12 @@ class BaseContext(object):
         justified=AppKit.NSJustifiedTextAlignment,
         )
 
+    _textTabAlignMap = dict(
+        center=AppKit.NSCenterTextAlignment,
+        left=AppKit.NSLeftTextAlignment,
+        right=AppKit.NSRightTextAlignment,
+        )
+
     _colorSpaceMap = dict(
         genericRGB=AppKit.NSColorSpace.genericRGBColorSpace,
         adobeRGB1998=AppKit.NSColorSpace.adobeRGB1998ColorSpace,
@@ -1227,6 +1361,13 @@ class BaseContext(object):
 
     def _printImage(self, pdf=None):
         pass
+    
+    def _linkDestination(self, name, (x, y)):
+        pass
+
+    def _linkRect(self, name, (x, y, w, h)):
+        pass
+    
 
     ###
 
@@ -1461,6 +1602,12 @@ class BaseContext(object):
     def hyphenation(self, value):
         self._state.text.hyphenation = value
 
+    def tabs(self, *tabs):
+        if tabs and tabs[0] is None:
+            self._state.text.tabs = []
+        else:
+            self._state.text.tabs = tabs
+
     def openTypeFeatures(self, *args, **features):
         if args and args[0] is None:
             self._state.text.openTypeFeatures.clear()
@@ -1499,6 +1646,19 @@ class BaseContext(object):
             # para.setLineSpacing_(self._state.text.lineHeight)
             para.setMaximumLineHeight_(self._state.text.lineHeight)
             para.setMinimumLineHeight_(self._state.text.lineHeight)
+        if self._state.text.tabs:
+            for tabStop in para.tabStops():
+                para.removeTabStop_(tabStop)
+            for tab, tabAlign in self._state.text.tabs:
+                tabOptions = None
+                if tabAlign in self._textTabAlignMap:
+                    tabAlign = self._textTabAlignMap[tabAlign]
+                else:
+                    tabCharSet = AppKit.NSCharacterSet.characterSetWithCharactersInString_(tabAlign)
+                    tabOptions = {AppKit.NSTabColumnTerminatorsAttributeName: tabCharSet}
+                    tabAlign = self._textAlignMap["right"]
+                tabStop = AppKit.NSTextTab.alloc().initWithTextAlignment_location_options_(tabAlign, tab, tabOptions)
+                para.addTabStop_(tabStop)
         attributes[AppKit.NSParagraphStyleAttributeName] = para
         if self._state.text.tracking:
             attributes[AppKit.NSKernAttributeName] = self._state.text.tracking
@@ -1610,3 +1770,9 @@ class BaseContext(object):
         if psName is not None:
             psName = psName.toUnicode()
         return psName
+
+    def linkDestination(self, name, (x, y)):
+        self._linkDestination(name, (x, y))
+    
+    def linkRect(self, name, (x, y, w, h)):
+        self._linkRect(name, (x, y, w, h))

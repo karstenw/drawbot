@@ -12,8 +12,9 @@ from context.dummyContext import DummyContext
 
 from context.tools import openType
 from context.tools.imageObject import ImageObject
+from context.tools import gifTools
 
-from misc import DrawBotError, warnings, VariableController, optimizePath, isPDF, isEPS
+from misc import DrawBotError, warnings, VariableController, optimizePath, isPDF, isEPS, isGIF
 
 
 def _getmodulecontents(module, names=None):
@@ -88,13 +89,14 @@ class DrawBotDrawingTool(object):
         namespace.update(_getmodulecontents(math))
 
     def _addInstruction(self, callback, *args, **kwargs):
+        if self._requiresNewFirstPage and not self._hasPage:
+            self._hasPage = True
+            self._instructionsStack.append(("newPage", [self.width(), self.height()], {}))
         self._instructionsStack.append((callback, args, kwargs))
 
     def _drawInContext(self, context):
         if not self._instructionsStack:
             return
-        if self._instructionsStack[0][0] != "newPage":
-            self._instructionsStack.insert(0, ("newPage", [self.width(), self.height()], {}))
         for callback, args, kwargs in self._instructionsStack:
             attr = getattr(context, callback)
             attr(*args, **kwargs)
@@ -106,11 +108,15 @@ class DrawBotDrawingTool(object):
             self._width = other._width
             self._height = other._height
             self._tempInstalledFonts = dict(other._tempInstalledFonts)
+            self._requiresNewFirstPage = other._requiresNewFirstPage
+            self._hasPage = other._hasPage
         else:
             self._instructionsStack = []
             self._dummyContext = DummyContext()
             self._width = None
             self._height = None
+            self._requiresNewFirstPage = False
+            self._hasPage = False
             if not hasattr(self, "_tempInstalledFonts"):
                 self._tempInstalledFonts = dict()
 
@@ -138,6 +144,7 @@ class DrawBotDrawingTool(object):
         This is advised when using drawBot as a standalone module.
         """
         self._uninstallAllFonts()
+        gifTools.clearExplodedGifCache()
 
     # magic variables
 
@@ -183,9 +190,7 @@ class DrawBotDrawingTool(object):
         """
         Returns the current page count.
         """
-        pageCount = 1
-        if self._instructionsStack and self._instructionsStack[0][0] == "newPage":
-            pageCount = 0
+        pageCount = 0
         for i in self._instructionsStack:
             if i[0] == "newPage":
                 pageCount += 1
@@ -232,7 +237,6 @@ class DrawBotDrawingTool(object):
         if not self._instructionsStack:
             self.newPage(width, height)
         else:
-            # self._addInstruction("size", width, height)
             raise DrawBotError("It is advised to use 'size()' at the top of a script.")
 
     def newPage(self, width=None, height=None):
@@ -255,6 +259,7 @@ class DrawBotDrawingTool(object):
             width, height = AppKit.NSScreen.mainScreen().frame().size
         self._width = width
         self._height = height
+        self._hasPage = True
         self._addInstruction("newPage", width, height)
 
     def newpage(self, width=None, height=None):
@@ -331,6 +336,7 @@ class DrawBotDrawingTool(object):
         but also the state of the colors, strokes...
         """
         self._dummyContext.save()
+        self._requiresNewFirstPage = True
         self._addInstruction("save")
 
     def restore(self):
@@ -340,6 +346,7 @@ class DrawBotDrawingTool(object):
         but also the state of colors, strokes...
         """
         self._dummyContext.restore()
+        self._requiresNewFirstPage = True
         self._addInstruction("restore")
 
     # basic shapes
@@ -350,6 +357,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/rect.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("rect", x, y, w, h)
 
     def oval(self, x, y, w, h):
@@ -358,6 +366,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/oval.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("oval", x, y, w, h)
 
     # path
@@ -366,6 +375,7 @@ class DrawBotDrawingTool(object):
         """
         Create a new path.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("newPath")
 
     def newpath(self):
@@ -376,6 +386,7 @@ class DrawBotDrawingTool(object):
         """
         Move to a point `x`, `y`.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("moveTo", (x, y))
 
     def moveto(self, x, y):
@@ -386,6 +397,7 @@ class DrawBotDrawingTool(object):
         """
         Line to a point `x`, `y`.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("lineTo", (x, y))
 
     def lineto(self, x, y):
@@ -397,6 +409,7 @@ class DrawBotDrawingTool(object):
         Curve to a point `x3`, `y3`.
         With given bezier handles `x1`, `y1` and `x2`, `y2`.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("curveTo", (x1, y1), (x2, y2), (x3, y3))
 
     def curveto(self, x1, y1, x2, y2, x3, y3):
@@ -407,18 +420,21 @@ class DrawBotDrawingTool(object):
         """
         Arc with `center` and a given `radius`, from `startAngle` to `endAngle`, going clockwise if `clockwise` is True and counter clockwise if `clockwise` is False.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("arc", center, radius, startAngle, endAngle, clockwise)
 
     def arcTo(self, (x1, y1), (x2, y2), radius):
         """
         Arc from one point to an other point with a given `radius`.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("arcTo", (x1, y1), (x2, y2), radius)
 
     def closePath(self):
         """
         Close the path.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("closePath")
 
     def closepath(self):
@@ -431,6 +447,9 @@ class DrawBotDrawingTool(object):
         """
         if isinstance(path, AppKit.NSBezierPath):
             path = self._bezierPathClass(path)
+        if isinstance(path, self._bezierPathClass):
+            path = path.copy()
+        self._requiresNewFirstPage = True
         self._addInstruction("drawPath", path)
 
     def drawpath(self, path=None):
@@ -445,6 +464,7 @@ class DrawBotDrawingTool(object):
         Use the current path as a clipping path.
         The clipping path will be used until the canvas gets a `restore()`.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("clipPath", path)
 
     def clippath(self, path=None):
@@ -508,6 +528,7 @@ class DrawBotDrawingTool(object):
 
         .. showCode:: /../examples/colorSpace.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("colorSpace", colorSpace)
 
     def listColorSpaces(self):
@@ -531,6 +552,7 @@ class DrawBotDrawingTool(object):
         """
         if operation not in self._dummyContext._blendModeMap.keys():
             raise DrawBotError("blend mode must be %s" % (", ".join(self._dummyContext._blendModeMap.keys())))
+        self._requiresNewFirstPage = True
         self._addInstruction("blendMode", operation)
 
     def fill(self, r=None, g=None, b=None, alpha=1):
@@ -540,6 +562,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/fill.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("fill", r, g, b, alpha)
 
     def stroke(self, r=None, g=None, b=None, alpha=1):
@@ -549,6 +572,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/stroke.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("stroke", r, g, b, alpha)
 
     def cmykFill(self, c, m=None, y=None, k=None, alpha=1):
@@ -559,6 +583,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/cmykFill.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("cmykFill", c, m, y, k, alpha)
 
     def cmykfill(self, c,  m=None, y=None, k=None, alpha=1):
@@ -573,6 +598,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/cmykStroke.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("cmykStroke", c, m, y, k, alpha)
 
     def cmykstroke(self, c,  m=None, y=None, k=None, alpha=1):
@@ -592,6 +618,7 @@ class DrawBotDrawingTool(object):
             color = (0, 0, 0)
         if blur is None:
             blur = 10
+        self._requiresNewFirstPage = True
         self._addInstruction("shadow", offset, blur, color)
 
     def cmykShadow(self, offset, blur=None, color=None):
@@ -605,6 +632,7 @@ class DrawBotDrawingTool(object):
             color = (0, 0, 0, 1, 1)
         if blur is None:
             blur = 10
+        self._requiresNewFirstPage = True
         self._addInstruction("cmykShadow", offset, blur, color)
 
     def cmykshadow(self, offset, blur=None, color=None):
@@ -624,6 +652,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/linearGradient.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("linearGradient", startPoint, endPoint, colors, locations)
 
     def lineargradient(self, startPoint=None, endPoint=None, colors=None, locations=None):
@@ -643,6 +672,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/cmykLinearGradient.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("cmykLinearGradient", startPoint, endPoint, colors, locations)
 
     def cmyklinearGradient(self, startPoint=None, endPoint=None, colors=None, locations=None):
@@ -664,6 +694,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/radialGradient.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("radialGradient", startPoint, endPoint, colors, locations, startRadius, endRadius)
 
     def radialgradient(self, startPoint=None, endPoint=None, colors=None, locations=None, startRadius=0, endRadius=100):
@@ -685,6 +716,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/cmykRadialGradient.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("cmykRadialGradient", startPoint, endPoint, colors, locations, startRadius, endRadius)
 
     def cmykradialgradient(self, startPoint=None, endPoint=None, colors=None, locations=None, startRadius=0, endRadius=100):
@@ -699,6 +731,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/strokeWidth.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("strokeWidth", value)
 
     def strokewidth(self, value):
@@ -711,6 +744,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/miterLimit.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("miterLimit", value)
 
     def miterlimit(self, value):
@@ -725,6 +759,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/lineJoin.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("lineJoin", value)
 
     def linejoin(self, value):
@@ -739,6 +774,7 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/lineCap.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("lineCap", value)
 
     def linecap(self, value):
@@ -756,6 +792,7 @@ class DrawBotDrawingTool(object):
             raise DrawBotError("lineDash must be a list of dashes or None")
         if isinstance(value[0], (list, tuple)):
             value = value[0]
+        self._requiresNewFirstPage = True
         self._addInstruction("lineDash", value)
 
     def linedash(self, *value):
@@ -768,13 +805,13 @@ class DrawBotDrawingTool(object):
         """
         Transform the canvas with a transformation matrix.
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("transform", matrix)
 
     def translate(self, x=0, y=0):
         """
         Translate the canvas with a given offset.
         """
-
         self.transform((1, 0, 0, 1, x, y))
 
     def rotate(self, angle):
@@ -896,6 +933,21 @@ class DrawBotDrawingTool(object):
         self._dummyContext.hyphenation(value)
         self._addInstruction("hyphenation", value)
 
+    def tabs(self, *tabs):
+        """
+        Set tabs, tuples of (`float`, `alignment`)
+        Aligment can be `"left"`, `"center"`, `"right"` or any other character.
+        If a character is provided the alignment will be `right` and centered on the specified character.
+
+        .. showcode:: /../examples/tabs.py
+        """
+        if tabs and tabs[0] is None:
+            self._dummyContext.tabs(None)
+            self._addInstruction("tabs", None)
+            return
+        self._dummyContext.tabs(*tabs)
+        self._addInstruction("tabs", *tabs)
+
     def openTypeFeatures(self, *args, **features):
         """
         Enable OpenType features.
@@ -974,6 +1026,7 @@ class DrawBotDrawingTool(object):
             align = "left"
         elif align not in self._dummyContext._textAlignMap.keys():
             raise DrawBotError("align must be %s" % (", ".join(self._dummyContext._textAlignMap.keys())))
+        self._requiresNewFirstPage = True
         self._addInstruction("textBox", txt, (x, y, w, h), align)
         return self._dummyContext.clippedText(txt, (x, y, w, h), align)
 
@@ -1020,9 +1073,10 @@ class DrawBotDrawingTool(object):
             path = path._nsImage()
         if isinstance(path, (str, unicode)):
             path = optimizePath(path)
+        self._requiresNewFirstPage = True
         self._addInstruction("image", path, (x, y), alpha, pageNumber)
 
-    def imageSize(self, path):
+    def imageSize(self, path, pageNumber=None):
         """
         Return the `width` and `height` of an image.
 
@@ -1042,15 +1096,25 @@ class DrawBotDrawingTool(object):
                 if not os.path.exists(path):
                     raise DrawBotError("Image does not exist")
                 url = AppKit.NSURL.fileURLWithPath_(path)
-            _isPDF, _ = isPDF(url)
+            _isPDF, pdfDocument = isPDF(url)
             # check if the file is an .eps
             _isEPS, epsRep = isEPS(url)
+            # check if the file is an .gif
+            _isGIF, gifRep = isGIF(url)
             if _isEPS:
                 _isPDF = True
                 rep = epsRep
+            elif _isGIF and pageNumber is not None:
+                rep = gifTools.gifFrameAtIndex(url, pageNumber-1)
+            elif _isPDF and pageNumber is not None:
+                page = pdfDocument.pageAtIndex_(pageNumber-1)
+                # this is probably not the fastest method...
+                rep = AppKit.NSImage.alloc().initWithData_(page.dataRepresentation())
             else:
                 rep = AppKit.NSImageRep.imageRepWithContentsOfURL_(url)
         if _isPDF:
+            w, h = rep.size()
+        elif _isGIF:
             w, h = rep.size()
         else:
             w, h = rep.pixelsWide(), rep.pixelsHigh()
@@ -1086,6 +1150,22 @@ class DrawBotDrawingTool(object):
         color = color.colorUsingColorSpaceName_("NSCalibratedRGBColorSpace")
         return color.redComponent(), color.greenComponent(), color.blueComponent(), color.alphaComponent()
 
+    def numberOfPages(self, path):
+        path = optimizePath(path)
+        if path.startswith("http"):
+            url = AppKit.NSURL.URLWithString_(path)
+        else:
+            url = AppKit.NSURL.fileURLWithPath_(path)
+        pdf = Quartz.CGPDFDocumentCreateWithURL(url)
+        if pdf:
+            return Quartz.CGPDFDocumentGetNumberOfPages(pdf)
+        _isGIF, _ = isGIF(url)
+        if _isGIF:
+            frameCount = gifTools.gifFrameCount(url)
+            if frameCount:
+                return frameCount
+        return None
+
     # mov
 
     def frameDuration(self, seconds):
@@ -1094,11 +1174,34 @@ class DrawBotDrawingTool(object):
 
         .. showcode:: /../examples/frameDuration.py
         """
+        self._requiresNewFirstPage = True
         self._addInstruction("frameDuration", seconds)
 
     def frameduration(self, seconds):
         _deprecatedWarningLowercase("frameDuration(%s)" % seconds)
         self.frameDuration(seconds)
+        
+        
+    # pdf links
+    
+    def linkDestination(self, name, x=None, y=None):
+        """
+        Add a destination point for a link within a PDF.
+        """
+        if x:
+            if len(x) == 2:
+                x, y = x
+            else: x, y = (None, None)
+        self._requiresNewFirstPage = True
+        self._addInstruction("linkDestination", name, (x, y))
+    
+    def linkRect(self, name, (x, y, w, h)):
+        """
+        Add a rect for a link within a PDF.
+        """
+        self._requiresNewFirstPage = True
+        self._addInstruction("linkRect", name, (x, y, w, h))
+        
 
     # helpers
 
@@ -1221,7 +1324,7 @@ class DrawBotDrawingTool(object):
 
     _bezierPathClass = BezierPath
 
-    def BezierPath(self, path=None):
+    def BezierPath(self, path=None, glyphSet=None):
         """
         Return a BezierPath object.
         This is a reusable object, if you want to draw the same over and over again.
@@ -1231,7 +1334,7 @@ class DrawBotDrawingTool(object):
         .. autoclass:: drawBot.context.baseContext.BezierPath
             :members:
         """
-        return self._bezierPathClass(path)
+        return self._bezierPathClass(path, glyphSet)
 
     def Bezierpath(self, path=None):
         _deprecatedWarningLowercase("BezierPath()")
