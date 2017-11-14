@@ -11,15 +11,65 @@
 # All configuration values have a default; values that are commented out
 # serve to show the default.
 
-import sys, os
+import sys
+import os
+import shutil
 import time
+
+
+# some hacking
+# support read the docs and the missing packages
+
+class MetaMock(type):
+
+    def __getattr__(self, name):
+        return self
+
+
+class Mock(object):
+
+    __metaclass__ = MetaMock
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        return Mock()
+
+    @classmethod
+    def __getattr__(cls, name):
+        if name in ('__file__', '__path__'):
+            return '/dev/null'
+        else:
+            return Mock
+
+
+MOCK_MODULES = ['py2app',
+        'AppKit', 'Quartz', 'CoreText', 'QTKit',
+        'fontTools',
+        'fontTools.misc',
+        'fontTools.misc.transform',
+        'fontTools.misc.xmlWriter',
+        'fontTools.pens',
+        'fontTools.pens.basePen',
+        'fontTools.pens.areaPen',
+        'ufoLib',
+        'ufoLib.pointPen',
+        'booleanOperations',
+        'vanilla',
+        'vanilla.vanillaBase']
+
+for mod_name in MOCK_MODULES:
+    sys.modules[mod_name] = Mock()
+
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 sys.path.insert(0, os.path.abspath('../'))
 
-import drawBotSettings
+
+import drawBot.drawBotSettings as drawBotSettings
 
 # -- General configuration -----------------------------------------------------
 
@@ -119,7 +169,7 @@ html_short_title = drawBotSettings.appName
 # The name of an image file (within the static path) to use as favicon of the
 # docs.  This file should be a Windows icon file (.ico) being 16x16 or 32x32
 # pixels large.
-html_favicon = "favicon.ico"
+# html_favicon = "favicon.ico"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
@@ -252,45 +302,6 @@ texinfo_documents = [
 add_module_names = False
 autodoc_member_order = 'bysource'
 
-### some hacking
-
-# read the docs hacking
-
-class MetaMock(type):
-
-    def __getattr__(self, name):
-        return self
-
-class Mock(object):
-
-    __metaclass__ = MetaMock
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def __call__(self, *args, **kwargs):
-        return Mock()
-
-    @classmethod
-    def __getattr__(cls, name):
-        if name in ('__file__', '__path__'):
-            return '/dev/null'
-        else:
-            return Mock
-
-MOCK_MODULES = ['py2app',
-        'AppKit', 'Quartz', 'CoreText', 'QTKit',
-        'xmlWriter',
-        'fontTools',
-        'fontTools.misc',
-        'fontTools.misc.transform',
-        'fontTools.pens',
-        'fontTools.pens.basePen',
-        'vanilla']
-for mod_name in MOCK_MODULES:
-    sys.modules[mod_name] = Mock()
-
-
 # sphinx hacking
 
 import posixpath
@@ -298,10 +309,11 @@ import posixpath
 import inspect
 
 from sphinx import addnodes
-from sphinx.directives.code import LiteralInclude
+from sphinx.directives.code import LiteralInclude, CodeBlock
 from sphinx.util.inspect import getargspec
 from sphinx.ext import autodoc
 from sphinx.writers.html import HTMLTranslator
+
 
 def visit_download_reference(self, node):
     if node.hasattr('filename'):
@@ -314,11 +326,14 @@ def visit_download_reference(self, node):
 
         node.clear()
 
+
 def depart_download_reference(self, node):
     pass
 
+
 HTMLTranslator.visit_download_reference = visit_download_reference
 HTMLTranslator.depart_download_reference = depart_download_reference
+
 
 class ShowCode(LiteralInclude):
 
@@ -333,7 +348,58 @@ class ShowCode(LiteralInclude):
         nodes.append(node)
         return nodes
 
+
+downloadCodeRoot = os.path.join(os.path.dirname(__file__), "downloads")
+if os.path.exists(downloadCodeRoot):
+    shutil.rmtree(downloadCodeRoot)
+
+os.mkdir(downloadCodeRoot)
+
+
+class DownloadCode(CodeBlock):
+
+    def run(self):
+        # get the argument
+        fileName = self.arguments[0]
+        # set the required language argument back
+        self.arguments[0] = os.path.splitext(fileName)[1][1:]
+        # set it as filename
+        self.options['filename'] = fileName
+        # encode the whole content
+        self.content = [unicode(line) for line in self.content]
+        # call parent class
+        nodes = super(DownloadCode, self).run()
+        # get the content and encode
+        code = u'\n'.join(self.content)
+        # get the path
+        path = os.path.join(downloadCodeRoot, fileName)
+        # check the path on duplicates
+        path = self.checkPath(path)
+        # the filename could be changed
+        fileName = os.path.basename(path)
+        self.options["filename"] = fileName
+        # write to disk
+        f = open(path, "w")
+        f.write(code.encode("utf-8"))
+        f.close()
+        # add download links
+        node = addnodes.download_reference()
+        node['reftarget'] = "/downloads/" + fileName
+        nodes.append(node)
+        return nodes
+
+    def checkPath(self, path, sourcePath=None, add=1):
+        if sourcePath is None:
+            sourcePath = path
+        if os.path.exists(path):
+            fileName, ext = os.path.splitext(sourcePath)
+            path = fileName + str(add) + ext
+            return self.checkPath(path, sourcePath=sourcePath, add=add+1)
+        return path
+
+
 class DrawBotDocumenter(autodoc.FunctionDocumenter):
+
     objtype = "function"
 
     def format_args(self):
@@ -363,4 +429,5 @@ class DrawBotDocumenter(autodoc.FunctionDocumenter):
 
 def setup(app):
     app.add_directive('showcode', ShowCode)
+    app.add_directive('downloadcode', DownloadCode)
     app.add_autodocumenter(DrawBotDocumenter)

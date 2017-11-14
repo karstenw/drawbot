@@ -1,7 +1,9 @@
 import AppKit
 from math import radians
+import os
 
 from drawBot.misc import DrawBotError, optimizePath
+from fontTools.misc.py23 import basestring
 
 
 class ImageObject(object):
@@ -18,7 +20,7 @@ class ImageObject(object):
 
     def __init__(self, path=None):
         self._filters = []
-        if path:
+        if path is not None:
             self.open(path)
 
     def __del__(self):
@@ -52,16 +54,19 @@ class ImageObject(object):
         """
         Open an image with a given `path`.
         """
-        if isinstance(path, (str, unicode)):
-            path = optimizePath(path)
         if isinstance(path, AppKit.NSImage):
             im = path
-        else:
+        elif isinstance(path, basestring):
+            path = optimizePath(path)
             if path.startswith("http"):
                 url = AppKit.NSURL.URLWithString_(path)
             else:
+                if not os.path.exists(path):
+                    raise DrawBotError("Image path '%s' does not exists." % path)
                 url = AppKit.NSURL.fileURLWithPath_(path)
             im = AppKit.NSImage.alloc().initByReferencingURL_(url)
+        else:
+            raise DrawBotError("Cannot read image path '%s'." % path)
         ciImage = AppKit.CIImage.imageWithData_(im.TIFFRepresentation())
         self._merge(ciImage, doCrop=True)
 
@@ -1511,17 +1516,17 @@ class ImageObject(object):
         """
         Applies a perspective correction, transforming an arbitrary quadrilateral region in the source image to a rectangular output image.
 
-        Attributes: `topLeft` a float, `topRight` a float, `bottomRight` a float, `bottomLeft` a float.
+        Attributes: `topLeft` a tuple (x, y), `topRight` a tuple (x, y), `bottomRight` a tuple (x, y), `bottomLeft` a tuple (x, y).
         """
         attr = dict()
         if topLeft:
-            attr["inputTopLeft"] = topLeft
+            attr["inputTopLeft"] = AppKit.CIVector.vectorWithValues_count_(topLeft, 2)
         if topRight:
-            attr["inputTopRight"] = topRight
+            attr["inputTopRight"] = AppKit.CIVector.vectorWithValues_count_(topRight, 2)
         if bottomRight:
-            attr["inputBottomRight"] = bottomRight
+            attr["inputBottomRight"] = AppKit.CIVector.vectorWithValues_count_(bottomRight, 2)
         if bottomLeft:
-            attr["inputBottomLeft"] = bottomLeft
+            attr["inputBottomLeft"] = AppKit.CIVector.vectorWithValues_count_(bottomLeft, 2)
         filterDict = dict(name="CIPerspectiveCorrection", attributes=attr)
         self._addFilter(filterDict)
 
@@ -1529,17 +1534,17 @@ class ImageObject(object):
         """
         Alters the geometry of an image to simulate the observer changing viewing position.
 
-        Attributes: `topLeft` a float, `topRight` a float, `bottomRight` a float, `bottomLeft` a float.
+        Attributes: `topLeft` a tuple (x, y), `topRight` a tuple (x, y), `bottomRight` a tuple (x, y), `bottomLeft` a tuple (x, y).
         """
         attr = dict()
         if topLeft:
-            attr["inputTopLeft"] = topLeft
+            attr["inputTopLeft"] = AppKit.CIVector.vectorWithValues_count_(topLeft, 2)
         if topRight:
-            attr["inputTopRight"] = topRight
+            attr["inputTopRight"] = AppKit.CIVector.vectorWithValues_count_(topRight, 2)
         if bottomRight:
-            attr["inputBottomRight"] = bottomRight
+            attr["inputBottomRight"] = AppKit.CIVector.vectorWithValues_count_(bottomRight, 2)
         if bottomLeft:
-            attr["inputBottomLeft"] = bottomLeft
+            attr["inputBottomLeft"] = AppKit.CIVector.vectorWithValues_count_(bottomLeft, 2)
         filterDict = dict(name="CIPerspectiveTransform", attributes=attr)
         self._addFilter(filterDict)
 
@@ -2365,17 +2370,17 @@ class ImageObject(object):
         """
         Applies a perspective transform to an image and then tiles the result.
 
-        Attributes: `topLeft` a float, `topRight` a float, `bottomRight` a float, `bottomLeft` a float.
+        Attributes: `topLeft` a tuple (x, y), `topRight` a tuple (x, y), `bottomRight` a tuple (x, y), `bottomLeft` a tuple (x, y).
         """
         attr = dict()
         if topLeft:
-            attr["inputTopLeft"] = topLeft
+            attr["inputTopLeft"] = AppKit.CIVector.vectorWithValues_count_(topLeft, 2)
         if topRight:
-            attr["inputTopRight"] = topRight
+            attr["inputTopRight"] = AppKit.CIVector.vectorWithValues_count_(topRight, 2)
         if bottomRight:
-            attr["inputBottomRight"] = bottomRight
+            attr["inputBottomRight"] = AppKit.CIVector.vectorWithValues_count_(bottomRight, 2)
         if bottomLeft:
-            attr["inputBottomLeft"] = bottomLeft
+            attr["inputBottomLeft"] = AppKit.CIVector.vectorWithValues_count_(bottomLeft, 2)
         filterDict = dict(name="CIPerspectiveTile", attributes=attr)
         self._addFilter(filterDict)
 

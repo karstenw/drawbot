@@ -1,5 +1,10 @@
 import objc
-from vanilla import *
+import AppKit
+
+# from vanilla import *
+import vanilla
+Window = vanilla.Window
+
 from defconAppKit.windows.baseWindow import BaseWindowController
 
 from codeEditor import CodeEditor, OutPutEditor
@@ -33,7 +38,7 @@ class DrawBotController(BaseWindowController):
             pass
 
         # the code editor
-        self.codeView = CodeEditor((0, 0, -0, -0))
+        self.codeView = CodeEditor((0, 0, -0, -0), callback=self.codeViewCallback)
         # the output view (will catch all stdout and stderr)
         self.outPutView = OutPutEditor((0, 0, -0, -0), readOnly=True)
         # the view to draw in
@@ -67,6 +72,10 @@ class DrawBotController(BaseWindowController):
         self.w.split.setDividerPosition(0, 0)
         self.w.split.setDividerPosition(1, windowWidth * .6)
         self.codeSplit.setDividerPosition(0, windowHeight * .7)
+
+    def codeViewCallback(self, sender):
+        document = self.w.getNSWindowController().document()
+        document.updateChangeCount_(AppKit.NSChangeDone)
 
     def runCode(self, liveCoding=False):
         # get the code
@@ -178,7 +187,7 @@ class DrawBotController(BaseWindowController):
         Sets the content of a file into the code view.
         """
         # open a file
-        f = open(path)
+        f = open(path, "rb")
         # read the content
         code = f.read().decode("utf-8")
         # close the file

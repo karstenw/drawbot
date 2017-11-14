@@ -3,13 +3,15 @@ import AppKit
 import CoreText
 
 import os
-import base64
+# import base64
 import random
+import uuid
 
-from xmlWriter import XMLWriter
+from fontTools.misc.xmlWriter import XMLWriter
 
 from fontTools.misc.transform import Transform
 
+from tools.openType import getFeatureTagsForFontAttributes
 from baseContext import BaseContext, GraphicsState, Shadow, Color, FormattedString, Gradient
 
 from drawBot.misc import warnings, formatNumber
@@ -50,10 +52,6 @@ class SVGColor(Color):
         c = self.getNSObject()
         if c:
             if c.numberOfComponents() == 2:
-                try:
-                    w = c.whiteComponent()
-                except ValueError, err:
-                    c = c.colorUsingColorSpaceName_(AppKit.NSCalibratedWhiteColorSpace)
                 # gray number
                 r = g = b = int(255*c.whiteComponent())
             else:
@@ -66,7 +64,7 @@ class SVGColor(Color):
                 b = int(255 * c.blueComponent())
             a = c.alphaComponent()
             return "rgba(%s,%s,%s,%s)" % (r, g, b, a)
-        return "none"
+        return None
 
 
 class SVGGradient(Gradient):
@@ -75,7 +73,7 @@ class SVGGradient(Gradient):
 
     def __init__(self, *args, **kwargs):
         objc.super(SVGGradient, self).__init__(*args, **kwargs)
-        self.tagID = id(self)
+        self.tagID = uuid.uuid4().hex
 
     def copy(self):
         new = objc.super(SVGShadow, self).copy()
@@ -140,7 +138,7 @@ class SVGShadow(Shadow):
 
     def __init__(self, *args, **kwargs):
         objc.super(SVGShadow, self).__init__(*args, **kwargs)
-        self.tagID = id(self)
+        self.tagID = uuid.uuid4().hex
 
     def copy(self):
         new = objc.super(SVGShadow, self).copy()
@@ -218,7 +216,6 @@ class SVGContext(BaseContext):
     _svgTagArguments = {
         "version": "1.1",
         "xmlns": "http://www.w3.org/2000/svg",
-        "xmlns:xlink": "http://www.w3.org/1999/xlink"
         }
 
     _svgLineJoinStylesMap = {
@@ -233,6 +230,7 @@ class SVGContext(BaseContext):
         AppKit.NSRoundLineCapStyle: "round",
     }
 
+    indentation = " "
     fileExtensions = ["svg"]
 
     def __init__(self):
@@ -240,9 +238,6 @@ class SVGContext(BaseContext):
         self._pages = []
 
     # not supported in a svg context
-
-    def openTypeFeatures(self, *args, **features):
-        warnings.warn("openTypeFeatures is not supported in a svg context")
 
     def cmykFill(self, c, m, y, k, a=1):
         warnings.warn("cmykFill is not supported in a svg context")
@@ -280,7 +275,7 @@ class SVGContext(BaseContext):
 
     # svg
 
-    def _reset(self):
+    def _reset(self, other=None):
         self._embeddedFonts = set()
 
     def _newPage(self, width, height):
@@ -290,7 +285,7 @@ class SVGContext(BaseContext):
         self.size(width, height)
         self._svgData = self._svgFileClass()
         self._pages.append(self._svgData)
-        self._svgContext = XMLWriter(self._svgData, encoding="utf-8")
+        self._svgContext = XMLWriter(self._svgData, encoding="utf-8", indentwhite=self.indentation)
         self._svgContext.width = self.width
         self._svgContext.height = self.height
         self._svgContext.begintag("svg", width=self.width, height=self.height, **self._svgTagArguments)
@@ -348,18 +343,16 @@ class SVGContext(BaseContext):
         self._svgContext.newline()
         self._state.clipPathID = uniqueID
 
-    def _textBox(self, txt, (x, y, w, h), align):
-        canDoGradients = not isinstance(txt, FormattedString)
+    def _textBox(self, txt, box, align):
+        path, (x, y) = self._getPathForFrameSetter(box)
+        canDoGradients = True
         if align == "justified":
             warnings.warn("justified text is not supported in a svg context")
         attrString = self.attributedString(txt, align=align)
-        if self._state.text.hyphenation:
-            attrString = self.hyphenateAttributedString(attrString, w)
+        if self._state.hyphenation:
+            attrString = self.hyphenateAttributedString(attrString, path)
         txt = attrString.string()
-
         setter = CoreText.CTFramesetterCreateWithAttributedString(attrString)
-        path = CoreText.CGPathCreateMutable()
-        CoreText.CGPathAddRect(path, None, CoreText.CGRectMake(x, y, w, h))
         box = CoreText.CTFramesetterCreateFrame(setter, (0, 0), path, None)
 
         self._svgBeginClipPath()
@@ -383,30 +376,43 @@ class SVGContext(BaseContext):
             #     continue
             ctRuns = CoreText.CTLineGetGlyphRuns(ctLine)
             for ctRun in ctRuns:
+                stringRange = CoreText.CTRunGetStringRange(ctRun)
                 attributes = CoreText.CTRunGetAttributes(ctRun)
                 font = attributes.get(AppKit.NSFontAttributeName)
+                fontAttributes = font.fontDescriptor().fontAttributes()
                 fillColor = attributes.get(AppKit.NSForegroundColorAttributeName)
                 strokeColor = attributes.get(AppKit.NSStrokeColorAttributeName)
                 strokeWidth = attributes.get(AppKit.NSStrokeWidthAttributeName, self._state.strokeWidth)
                 baselineShift = attributes.get(AppKit.NSBaselineOffsetAttributeName, 0)
+                openTypeFeatures = fontAttributes.get(CoreText.NSFontFeatureSettingsAttribute)
 
                 fontName = font.fontName()
                 fontSize = font.pointSize()
 
                 spanData = dict(defaultData)
-                spanData["fill"] = self._colorClass(fillColor).svgColor()
-                spanData["stroke"] = self._colorClass(strokeColor).svgColor()
-                spanData["stroke-width"] = strokeWidth
+                fill = self._colorClass(fillColor).svgColor()
+                if fill:
+                    spanData["fill"] = fill
+                stroke = self._colorClass(strokeColor).svgColor()
+                if stroke:
+                    spanData["stroke"] = stroke
+                    spanData["stroke-width"] = formatNumber(abs(strokeWidth))
                 spanData["font-family"] = fontName
-                spanData["font-size"] = fontSize
+                spanData["font-size"] = formatNumber(fontSize)
+
+                if openTypeFeatures:
+                    featureTags = getFeatureTagsForFontAttributes(openTypeFeatures)
+                    spanData["style"] = self._svgStyle(**{
+                            "font-feature-settings": self._svgStyleOpenTypeFeatures(featureTags)
+                        }
+                    )
 
                 if canDoGradients and self._state.gradient is not None:
                     spanData["fill"] = "url(#%s_flipped)" % self._state.gradient.tagID
 
                 self._save()
 
-                r = CoreText.CTRunGetStringRange(ctRun)
-                runTxt = txt.substringWithRange_((r.location, r.length))
+                runTxt = txt.substringWithRange_((stringRange.location, stringRange.length))
                 while runTxt and runTxt[-1] == " ":
                     runTxt = runTxt[:-1]
                 runTxt = runTxt.replace("\n", "")
@@ -418,8 +424,8 @@ class SVGContext(BaseContext):
                     runX = runPos[0].x
                     runY = runPos[0].y
 
-                spanData["x"] = originX + runX
-                spanData["y"] = self.height - originY - runY + baselineShift
+                spanData["x"] = formatNumber(originX + runX)
+                spanData["y"] = formatNumber(self.height - originY - runY + baselineShift)
                 self._svgContext.begintag("tspan", **spanData)
                 self._svgContext.newline()
                 self._svgContext.write(runTxt)
@@ -461,9 +467,10 @@ class SVGContext(BaseContext):
     # helpers
 
     def _getUniqueID(self):
-        b = [chr(random.randrange(256)) for i in range(16)]
-        i = long(('%02x'*16) % tuple(map(ord, b)), 16)
-        return '%032x' % i
+        return uuid.uuid4().hex
+        # b = [chr(random.randrange(256)) for i in range(16)]
+        # i = long(('%02x'*16) % tuple(map(ord, b)), 16)
+        # return '%032x' % i
 
     def _svgTransform(self, transform):
         return "matrix(%s)" % (",".join([str(s) for s in transform]))
@@ -513,33 +520,41 @@ class SVGContext(BaseContext):
 
     def _svgDrawingAttributes(self):
         data = dict()
-        data["fill"] = self._svgFillColor()
-        data["stroke"] = self._svgStrokeColor()
-        data["stroke-width"] = self._state.strokeWidth
-        data["stroke-dasharray"] = "none"
+        fill = self._svgFillColor()
+        if fill:
+            data["fill"] = fill
+        stroke = self._svgStrokeColor()
+        if stroke:
+            data["stroke"] = stroke
+            data["stroke-width"] = formatNumber(abs(self._state.strokeWidth))
         if self._state.lineDash:
             data["stroke-dasharray"] = ",".join([str(i) for i in self._state.lineDash])
-        data["stroke-linejoin"] = "inherit"
         if self._state.lineJoin in self._svgLineJoinStylesMap:
             data["stroke-linejoin"] = self._svgLineJoinStylesMap[self._state.lineJoin]
-        data["stroke-linecap"] = "inherit"
         if self._state.lineCap in self._svgLineCapStylesMap:
             data["stroke-linecap"] = self._svgLineCapStylesMap[self._state.lineCap]
-        if self._state.blendMode is not None:
-            data["style"] = "mix-blend-mode: %s;" % self._state.blendMode
         return data
 
     def _svgFillColor(self):
         if self._state.fillColor:
             return self._state.fillColor.svgColor()
-        else:
-            return "none"
+        return None
 
     def _svgStrokeColor(self):
         if self._state.strokeColor:
             return self._state.strokeColor.svgColor()
-        else:
-            return "none"
+        return None
+
+    def _svgStyleOpenTypeFeatures(self, featureTags):
+        return ", ".join(["'%s'" % tag for tag in featureTags])
+
+    def _svgStyle(self, **kwargs):
+        style = []
+        if self._state.blendMode is not None:
+            style.append("mix-blend-mode: %s;" % self._state.blendMode)
+        for key, value in kwargs.items():
+            style.append("%s: %s;" % (key, value))
+        return " ".join(style)
 
     def installFont(self, path):
         success, error = super(self.__class__, self).installFont(path)

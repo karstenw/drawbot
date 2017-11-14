@@ -11,6 +11,7 @@ import vanilla
 # = errors =
 # ==========
 
+
 class DrawBotError(TypeError):
     pass
 
@@ -80,7 +81,7 @@ def optimizePath(path):
 # = number tools =
 # ================
 
-def formatNumber(value, decimals=3):
+def formatNumber(value, decimals=2):
     value = float(value)
     if value.is_integer():
         return "%i" % value
@@ -110,9 +111,9 @@ def rgb2cmyk(r, g, b):
     m = 1 - g
     y = 1 - b
     k = min(c, m, y)
-    c = min(1, max(0, c-k))
-    m = min(1, max(0, m-k))
-    y = min(1, max(0, y-k))
+    c = min(1, max(0, c - k))
+    m = min(1, max(0, m - k))
+    y = min(1, max(0, y - k))
     k = min(1, max(0, k))
     return c, m, y, k
 
@@ -176,6 +177,7 @@ class Warnings(object):
         sys.stderr.write("*** DrawBot warning: %s ***\n" % message)
         self._warnMessages.add(message)
 
+
 warnings = Warnings()
 
 
@@ -217,7 +219,8 @@ class VariableController(object):
                 # set the label view
                 setattr(ui, "%sLabel" % name, label)
             else:
-                args["title"] = name
+                if "title" not in args:
+                    args["title"] = name
             # check the provided args and add required keys
             if uiElement == "ColorWell":
                 # a color well needs a color to be set

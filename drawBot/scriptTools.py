@@ -1,12 +1,19 @@
-# -*- coding: UTF-8 -*-
+# -*- coding: utf-8 -*-
 import __future__
+import AppKit
+import time
 import os
 import sys
 import traceback
 import site
 import tempfile
+import re
+
+from vanilla.vanillaBase import osVersion10_10, osVersionCurrent
 
 from drawBot.misc import getDefault
+
+from fontTools.misc.py23 import PY2, PY3
 
 
 class StdOutput(object):
@@ -15,17 +22,23 @@ class StdOutput(object):
         self.data = output
         self.isError = isError
         self.outputView = outputView
+        self._previousFlush = time.time()
 
     def write(self, data):
-        if isinstance(data, str):
+        if PY2 and isinstance(data, str):
             try:
                 data = unicode(data, "utf-8", "replace")
             except UnicodeDecodeError:
                 data = "XXX " + repr(data)
         if self.outputView is not None:
             self.outputView.append(data, self.isError)
-            self.outputView.forceUpdate()
-            self.outputView.scrollToEnd()
+            # self.outputView.forceUpdate()
+            t = time.time()
+            if t - self._previousFlush > 0.2:
+                self.outputView.scrollToEnd()
+                if osVersionCurrent >= osVersion10_10:
+                    AppKit.NSRunLoop.mainRunLoop().runUntilDate_(AppKit.NSDate.dateWithTimeIntervalSinceNow_(0.0001))
+                self._previousFlush = t
         else:
             self.data.append((data, self.isError))
 
@@ -74,33 +87,37 @@ def _execute(cmds):
     return stderr, stdout
 
 
-localSitePackagesCode = u"""
-from distutils import sysconfig
-
-_site_packages_path = sysconfig.get_python_lib()
-print _site_packages_path
-"""
-
-
-def getLocalCurrentPythonVersionDirName():
-    tempFile = tempfile.mkstemp(".py")[1]
-
-    f = open(tempFile, "w")
-    f.write(localSitePackagesCode)
-    f.close()
-
-    log = _execute(["python", tempFile])[1]
-
-    sitePackages = log.split("\n")[0]
-
-    os.remove(tempFile)
+def getLocalPythonVersionDirName(standardLib=True):
+    if PY3:
+        return None
+    argument = ""
+    if standardLib:
+        argument = "standard_lib=True"
+    commands = ["python", "-c", "from distutils import sysconfig; print(sysconfig.get_python_lib(%s))" % argument]
+    err, out = _execute(commands)
+    sitePackages = out.split("\n")[0]
     if os.path.exists(sitePackages):
         return sitePackages
     else:
-        return False
+        return None
 
+def getLocalPython3Paths():
+    if PY3:
+        version = "%s.%s" % (sys.version_info.major, sys.version_info.minor)
+        paths = [
+            # add local stdlib and site-packages; TODO: this needs editing once we embed the full stdlib
+            '/Library/Frameworks/Python.framework/Versions/%s/lib/python%s' % (version, version),
+            '/Library/Frameworks/Python.framework/Versions/%s/lib/python%s/lib-dynload' % (version, version),
+            '/Library/Frameworks/Python.framework/Versions/%s/lib/python%s/site-packages' % (version, version),
+            '/Library/Python/%s/site-packages' % version,
+        ]
+        return paths
+    else:
+        return []
 
-localSitePackagesPath = getLocalCurrentPythonVersionDirName()
+localStandardLibPath = getLocalPythonVersionDirName(standardLib=True)
+localSitePackagesPath = getLocalPythonVersionDirName(standardLib=False)
+localPy3Paths = getLocalPython3Paths()
 
 
 class DrawBotNamespace(dict):
@@ -130,12 +147,26 @@ class _Helper(object):
         return pydoc.help(*args, **kwds)
 
 
+# Regex taken from http://legacy.python.org/dev/peps/pep-0263/
+_encodingDeclarationPattern = re.compile(r"^[ \t\v]*#.*?coding[:=][ \t]*([-_.a-zA-Z0-9]+)")
+
+def hasEncodingDeclaration(source):
+    # An encoding declaration must occur within the first two lines of the source code
+    if _encodingDeclarationPattern.match(source) is not None:
+        return True
+    pos = source.find("\n")
+    if pos >= 0:
+        if _encodingDeclarationPattern.match(source[pos+1:]) is not None:
+            return True
+    return False
+
+
 class ScriptRunner(object):
 
     def __init__(self, text=None, path=None, stdout=None, stderr=None, namespace=None, checkSyntaxOnly=False):
         from threading import Thread
         if path:
-            if isinstance(path, unicode):
+            if PY2 and isinstance(path, unicode):
                 path = path.encode("utf-8")
             curDir, fileName = os.path.split(path)
         else:
@@ -163,15 +194,26 @@ class ScriptRunner(object):
         sys.argv = [fileName]
         os.chdir(curDir)
         sys.path.insert(0, curDir)
+        if localStandardLibPath and localStandardLibPath not in sys.path:
+            site.addsitedir(localStandardLibPath)
         if localSitePackagesPath and localSitePackagesPath not in sys.path:
             site.addsitedir(localSitePackagesPath)
+        for path in localPy3Paths:
+            if path not in sys.path and os.path.exists(path):
+                site.addsitedir(path)
         # here we go
         if text is None:
             f = open(path, 'rb')
             text = f.read()
             f.close()
         source = text.replace('\r\n', '\n').replace('\r', '\n')
-
+        if hasEncodingDeclaration(source):
+            # compile() complains when an encoding declaration is found in a unicode string.
+            # As a workaround, we'll just encode it back as a utf-8 string and all is good.
+            try:
+                source = source.encode("utf-8")
+            except:
+                pass
         compileFlags = 0
         if getDefault("DrawBotUseFutureDivision", True):
             compileFlags |= __future__.CO_FUTURE_DIVISION
@@ -185,7 +227,7 @@ class ScriptRunner(object):
                 if not checkSyntaxOnly:
                     self._scriptDone = False
                     try:
-                        exec code in namespace
+                        exec(code, namespace)
                     except KeyboardInterrupt:
                         pass
                     except:

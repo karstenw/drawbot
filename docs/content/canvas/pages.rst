@@ -5,6 +5,7 @@ Pages
 
 .. autofunction:: drawBot.newPage
 .. autofunction:: drawBot.newDrawing
+.. autofunction:: drawBot.endDrawing
 
 Size
 ----
@@ -18,5 +19,7 @@ Page Attributes
 .. autofunction:: drawBot.width
 .. autofunction:: drawBot.height
 .. autofunction:: drawBot.pageCount
+.. autofunction:: drawBot.pages
 .. autofunction:: drawBot.frameDuration
-.. autofunction:: drawBot.blendMode
+.. autofunction:: drawBot.linkDestination(name, (x, y))
+.. autofunction:: drawBot.linkRect

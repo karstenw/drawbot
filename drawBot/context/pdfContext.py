@@ -1,3 +1,5 @@
+import platform
+from distutils.version import StrictVersion
 import objc
 import AppKit
 import CoreText
@@ -11,17 +13,15 @@ from baseContext import BaseContext, FormattedString
 from drawBot.misc import DrawBotError, isPDF, isGIF
 
 
+osVersionCurrent = StrictVersion(platform.mac_ver()[0])
+osVersion10_11 = StrictVersion("10.11")
+
+
 def sendPDFtoPrinter(pdfDocument):
     printInfo = AppKit.NSPrintInfo.sharedPrintInfo()
     op = pdfDocument.getPrintOperationForPrintInfo_autoRotate_(printInfo, True)
     printPanel = op.printPanel()
-    printPanel.setOptions_(  AppKit.NSPrintPanelShowsCopies
-                           | AppKit.NSPrintPanelShowsPageRange
-                           | AppKit.NSPrintPanelShowsPaperSize
-                           | AppKit.NSPrintPanelShowsOrientation
-                           | AppKit.NSPrintPanelShowsScaling
-                           | AppKit.NSPrintPanelShowsPrintSelection
-                           | AppKit.NSPrintPanelShowsPreview)
+    printPanel.setOptions_(AppKit.NSPrintPanelShowsCopies | AppKit.NSPrintPanelShowsPageRange | AppKit.NSPrintPanelShowsPaperSize | AppKit.NSPrintPanelShowsOrientation | AppKit.NSPrintPanelShowsScaling | AppKit.NSPrintPanelShowsPrintSelection | AppKit.NSPrintPanelShowsPreview)
     op.runOperation()
 
 
@@ -58,10 +58,12 @@ class PDFContext(BaseContext):
         self._hasContext = False
 
     def _saveImage(self, path, multipage):
+        pool = AppKit.NSAutoreleasePool.alloc().init()
         self._closeContext()
         self._writeDataToFile(self._pdfData, path, multipage)
         self._pdfContext = None
         self._pdfData = None
+        del pool
 
     def _writeDataToFile(self, data, path, multipage):
         if multipage is None:
@@ -136,19 +138,19 @@ class PDFContext(BaseContext):
             self._pdfPath(self._state.path)
             Quartz.CGContextClip(self._pdfContext)
 
-    def _textBox(self, txt, (x, y, w, h), align):
-        canDoGradients = not isinstance(txt, FormattedString)
+    def _textBox(self, txt, box, align):
+        path, (x, y) = self._getPathForFrameSetter(box)
+
+        canDoGradients = True
         attrString = self.attributedString(txt, align=align)
-        if self._state.text.hyphenation:
-            attrString = self.hyphenateAttributedString(attrString, w)
+        if self._state.hyphenation:
+            attrString = self.hyphenateAttributedString(attrString, path)
 
         setter = CoreText.CTFramesetterCreateWithAttributedString(attrString)
-        path = Quartz.CGPathCreateMutable()
-        Quartz.CGPathAddRect(path, None, Quartz.CGRectMake(x, y, w, h))
-        box = CoreText.CTFramesetterCreateFrame(setter, (0, 0), path, None)
+        frame = CoreText.CTFramesetterCreateFrame(setter, (0, 0), path, None)
 
-        ctLines = CoreText.CTFrameGetLines(box)
-        origins = CoreText.CTFrameGetLineOrigins(box, (0, len(ctLines)), None)
+        ctLines = CoreText.CTFrameGetLines(frame)
+        origins = CoreText.CTFrameGetLineOrigins(frame, (0, len(ctLines)), None)
         for i, (originX, originY) in enumerate(origins):
             ctLine = ctLines[i]
             bounds = CoreText.CTLineGetImageBounds(ctLine, self._pdfContext)
@@ -201,6 +203,14 @@ class PDFContext(BaseContext):
                         Quartz.CGContextSetLineJoin(self._pdfContext, self._state.lineJoin)
                 if fillColor is not None and strokeColor is not None:
                     drawingMode = Quartz.kCGTextFillStroke
+                    if osVersionCurrent >= osVersion10_11:
+                        # solve bug in OSX where the stroke color is the same as the fill color
+                        # simple solution: draw it twice...
+                        drawingMode = Quartz.kCGTextFill
+                        Quartz.CGContextSetTextDrawingMode(self._pdfContext, drawingMode)
+                        Quartz.CGContextSetTextPosition(self._pdfContext, x+originX, y+originY+baselineShift)
+                        CoreText.CTRunDraw(ctRun, self._pdfContext, (0, 0))
+                        drawingMode = Quartz.kCGTextStroke
 
                 if drawingMode is not None:
                     Quartz.CGContextSetTextDrawingMode(self._pdfContext, drawingMode)
@@ -298,7 +308,8 @@ class PDFContext(BaseContext):
                 cgColor = self._rgbNSColorToCGColor(c)
         else:
             cgColor = self._nsColorToCGColor(c)
-        Quartz.CGContextSetFillColorWithColor(self._pdfContext, cgColor)
+        if self._hasContext and self._pdfContext:
+            Quartz.CGContextSetFillColorWithColor(self._pdfContext, cgColor)
 
     def _pdfStrokeColor(self, c=None):
         if c is None:
@@ -310,7 +321,8 @@ class PDFContext(BaseContext):
                 cgColor = self._rgbNSColorToCGColor(c)
         else:
             cgColor = self._nsColorToCGColor(c)
-        Quartz.CGContextSetStrokeColorWithColor(self._pdfContext, cgColor)
+        if self._hasContext and self._pdfContext:
+            Quartz.CGContextSetStrokeColorWithColor(self._pdfContext, cgColor)
 
     def _pdfShadow(self, shadow):
         if shadow.cmykColor:

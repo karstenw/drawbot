@@ -4,7 +4,8 @@ import AppKit
 NSMakeRange = AppKit.NSMakeRange
 NSMaxRange = AppKit.NSMaxRange
 NSLocationInRange = AppKit.NSLocationInRange
-
+NSFontAttributeName = AppKit.NSFontAttributeName
+NSForegroundColorAttributeName = AppKit.NSForegroundColorAttributeName
 
 """
 Based/translated from NoodleLineNumberView
@@ -41,9 +42,9 @@ class NSLineNumberRuler(AppKit.NSRulerView):
 
     def textAttributes(self):
         return {
-                AppKit.NSFontAttributeName: self.font(),
-                AppKit.NSForegroundColorAttributeName: self.textColor()
-                }
+            NSFontAttributeName: self.font(),
+            NSForegroundColorAttributeName: self.textColor()
+        }
 
     def setRulerBackgroundColor_(self, color):
         self._rulerBackgroundColor = color
@@ -78,6 +79,14 @@ class NSLineNumberRuler(AppKit.NSRulerView):
         self.invalidateLineIndices()
         self.setNeedsDisplay_(True)
 
+    def dealloc(self):
+        # make sure we remove ourselves as an observer of the text storage
+        view = self.clientView()
+        if view is not None:
+            AppKit.NSNotificationCenter.defaultCenter().removeObserver_name_object_(self,
+                                        AppKit.NSTextStorageDidProcessEditingNotification, view.textStorage())
+        super(AppKit.NSLineNumberRuler, self).dealloc()
+
     def calculateLines(self):
         view = self.clientView()
         if not isinstance(view, AppKit.NSTextView):
@@ -109,7 +118,7 @@ class NSLineNumberRuler(AppKit.NSRulerView):
         oldThickness = self.ruleThickness()
         newThickness = self.requiredThickness()
 
-        if abs(oldThickness - newThickness) > 1:
+        if abs(oldThickness - newThickness) > 0:
             invocation = AppKit.NSInvocation.invocationWithMethodSignature_(self.methodSignatureForSelector_("setRuleThickness:"))
             invocation.setSelector_("setRuleThickness:")
             invocation.setTarget_(self)
@@ -122,7 +131,7 @@ class NSLineNumberRuler(AppKit.NSRulerView):
 
         sampleString = AppKit.NSString.stringWithString_("8"*digits)
         stringSize = sampleString.sizeWithAttributes_(self.textAttributes())
-        return math.ceil(max([self.DEFAULT_THICKNESS, stringSize.width + self.RULER_MARGIN*2]))
+        return math.ceil(max([self.DEFAULT_THICKNESS, stringSize.width + self.RULER_MARGIN * 2]))
 
     def lineNumberForCharacterIndex_inText_(self, index, text):
         lines = self.lineIndices()
@@ -131,7 +140,7 @@ class NSLineNumberRuler(AppKit.NSRulerView):
         right = len(lines)
 
         while (right - left) > 1:
-            mid = (right + left) / 2
+            mid = (right + left) // 2
             lineStart = lines[mid]
 
             if index < lineStart:
@@ -178,11 +187,11 @@ class NSLineNumberRuler(AppKit.NSRulerView):
             index = lines[line]
             if NSLocationInRange(index, _range):
                 rects, rectCount = layoutManager.rectArrayForCharacterRange_withinSelectedCharacterRange_inTextContainer_rectCount_(
-                                                    NSMakeRange(index, 0),
-                                                    nullRange,
-                                                    container,
-                                                    None
-                                                    )
+                    NSMakeRange(index, 0),
+                    nullRange,
+                    container,
+                    None
+                )
                 if rectCount > 0:
                     ypos = yinset + AppKit.NSMinY(rects[0]) - AppKit.NSMinY(visibleRect)
                     labelText = AppKit.NSString.stringWithString_("%s" % (line+1))
